@@ -5,6 +5,9 @@ A small Mac app for the Samsung U28E590 in picture by picture mode. It selects t
 - Large text: 960 × 1080 HiDPI, using a mode macOS already has.
 - More space: 1920 × 2160 native.
 - Custom logical sizes: an 8:9 HiDPI virtual display mirrored onto the U28E590. The app must stay open for a custom size.
+- A brightness slider in the app window and top menu. It places a transparent dimmer over the Mac half, so it does not change the monitor's backlight or the other computer's half.
+
+The U28E590 did not respond to DDC brightness reads in the tested split-screen setup, so this brightness control is visual dimming only. Quitting HalfScreen removes the dimmer.
 
 Build with Xcode command line tools on macOS, then run:
 
@@ -22,6 +25,6 @@ Custom sizes use undocumented macOS `CGVirtualDisplay` and CGS display-mode APIs
 
 The app identifies the U28E590 by Samsung vendor and model IDs, so it will not change the other Samsung display.
 
-Run `/Applications/HalfScreen.app/Contents/MacOS/HalfScreen --status` to inspect the current logical and physical mode. `--large` and `--native` switch directly between the two physical-display presets without opening the app.
+Run `/Applications/HalfScreen.app/Contents/MacOS/HalfScreen --status` to inspect the current logical and physical mode. `--large` and `--native` switch directly between the two physical-display presets without opening the app. With the app running, `--brightness 80` sets the Mac half to 80% visual brightness; valid values are 20–100.
 
 Third-party acknowledgments are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ServiceManagement/ServiceManagement.h>
+#import "Brightness.h"
 #include <dlfcn.h>
 #include <float.h>
 #include <limits.h>
@@ -49,6 +50,7 @@ static const uint32_t kSamsungVendor = 0x4c2d;
 static const uint32_t kU28Model = 0x0c4d;
 static const size_t kSignalWidth = 1920;
 static const size_t kSignalHeight = 2160;
+static NSString * const kBrightnessCommand = @"local.josu.HalfScreen.SetBrightness";
 static CGDirectDisplayID FindTargetDisplay(void);
 static NSString *ModeDescription(CGDirectDisplayID display);
 
@@ -525,6 +527,11 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 @property (nonatomic, strong) NSButton *loginButton;
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic, strong) HSDisplayController *displays;
+@property (nonatomic, strong) HSBrightnessController *brightness;
+@property (nonatomic, strong) NSSlider *windowBrightnessSlider;
+@property (nonatomic, strong) NSSlider *menuBrightnessSlider;
+@property (nonatomic, strong) NSTextField *windowBrightnessValue;
+@property (nonatomic, strong) NSTextField *menuBrightnessValue;
 @property (nonatomic, strong) NSTimer *watchdog;
 @end
 
@@ -559,44 +566,63 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     return button;
 }
 
+- (void)centerWindowOnBuiltInDisplay {
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        if (!CGDisplayIsBuiltin(number.unsignedIntValue)) continue;
+        NSRect area = screen.visibleFrame;
+        NSRect windowFrame = self.window.frame;
+        [self.window setFrameOrigin:NSMakePoint(
+            round(NSMidX(area) - NSWidth(windowFrame) / 2.0),
+            round(NSMidY(area) - NSHeight(windowFrame) / 2.0))];
+        return;
+    }
+    [self.window center];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     self.displays = [[HSDisplayController alloc] init];
+    self.brightness = [[HSBrightnessController alloc] init];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(brightnessCommand:)
+              name:kBrightnessCommand object:nil];
     __weak typeof(self) weakSelf = self;
     self.displays.onChange = ^{ [weakSelf refreshStatus]; };
 
-    NSRect frame = NSMakeRect(0, 0, 540, 365);
+    NSRect frame = NSMakeRect(0, 0, 540, 455);
     self.window = [[NSWindow alloc]
         initWithContentRect:frame
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                              NSWindowStyleMaskMiniaturizable)
                     backing:NSBackingStoreBuffered defer:NO];
+    self.window.releasedWhenClosed = NO;
     self.window.title = @"HalfScreen";
-    [self.window center];
+    [self centerWindowOnBuiltInDisplay];
     NSView *content = self.window.contentView;
 
     NSTextField *title = [self label:@"U28E590 · split monitor"
-                                 frame:NSMakeRect(24, 316, 490, 31) size:23];
+                                 frame:NSMakeRect(24, 406, 490, 31) size:23];
     title.font = [NSFont boldSystemFontOfSize:23];
     [content addSubview:title];
     self.statusLabel = [self label:@"Checking display…"
-                              frame:NSMakeRect(24, 282, 490, 24) size:14];
+                              frame:NSMakeRect(24, 372, 490, 24) size:14];
     [content addSubview:self.statusLabel];
     [content addSubview:[self label:@"Output stays at 1920 × 2160 so the image fills its half."
-                                frame:NSMakeRect(24, 251, 490, 21) size:12]];
+                                frame:NSMakeRect(24, 341, 490, 21) size:12]];
 
     [content addSubview:[self button:@"Large text · 960 × 1080"
-                                frame:NSMakeRect(24, 205, 245, 32)
+                                frame:NSMakeRect(24, 295, 245, 32)
                                action:@selector(largePressed:)]];
     [content addSubview:[self button:@"More space · 1920 × 2160"
-                                frame:NSMakeRect(275, 205, 239, 32)
+                                frame:NSMakeRect(275, 295, 239, 32)
                                action:@selector(nativePressed:)]];
 
     NSTextField *custom = [self label:@"Custom screen size (looks like)"
-                                    frame:NSMakeRect(24, 166, 350, 22) size:14];
+                                    frame:NSMakeRect(24, 256, 350, 22) size:14];
     custom.font = [NSFont boldSystemFontOfSize:14];
     [content addSubview:custom];
-    self.widthField = [[NSTextField alloc] initWithFrame:NSMakeRect(24, 128, 80, 28)];
-    self.heightField = [[NSTextField alloc] initWithFrame:NSMakeRect(130, 128, 80, 28)];
+    self.widthField = [[NSTextField alloc] initWithFrame:NSMakeRect(24, 218, 80, 28)];
+    self.heightField = [[NSTextField alloc] initWithFrame:NSMakeRect(130, 218, 80, 28)];
     NSInteger width = [[NSUserDefaults standardUserDefaults] integerForKey:@"looksWidth"];
     NSInteger height = [[NSUserDefaults standardUserDefaults] integerForKey:@"looksHeight"];
     if (width < 640 || width > 1920) width = 1200;
@@ -605,12 +631,12 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     self.heightField.integerValue = height;
     self.widthField.delegate = self;
     [content addSubview:self.widthField];
-    [content addSubview:[self label:@"×" frame:NSMakeRect(110, 130, 20, 22) size:16]];
+    [content addSubview:[self label:@"×" frame:NSMakeRect(110, 220, 20, 22) size:16]];
     [content addSubview:self.heightField];
     [content addSubview:[self button:@"Apply custom"
-                                frame:NSMakeRect(310, 125, 204, 32)
+                                frame:NSMakeRect(310, 215, 204, 32)
                                action:@selector(customPressed:)]];
-    self.aspectButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 93, 275, 24)];
+    self.aspectButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 183, 275, 24)];
     self.aspectButton.title = @"Fill the half monitor (8:9)";
     self.aspectButton.buttonType = NSButtonTypeSwitch;
     self.aspectButton.state = NSControlStateValueOn;
@@ -618,7 +644,27 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     self.aspectButton.action = @selector(aspectChanged:);
     [content addSubview:self.aspectButton];
     [content addSubview:[self label:@"Custom sizes need HalfScreen open. Other shapes may show bars."
-                                frame:NSMakeRect(24, 65, 490, 20) size:11]];
+                                frame:NSMakeRect(24, 155, 490, 20) size:11]];
+
+    NSTextField *brightnessTitle = [self label:@"Brightness · Mac half"
+                                         frame:NSMakeRect(24, 115, 350, 22) size:14];
+    brightnessTitle.font = [NSFont boldSystemFontOfSize:14];
+    [content addSubview:brightnessTitle];
+    self.windowBrightnessSlider = [[NSSlider alloc]
+        initWithFrame:NSMakeRect(24, 86, 420, 22)];
+    self.windowBrightnessSlider.minValue = 20;
+    self.windowBrightnessSlider.maxValue = 100;
+    self.windowBrightnessSlider.integerValue = self.brightness.percent;
+    self.windowBrightnessSlider.continuous = NO;
+    self.windowBrightnessSlider.target = self;
+    self.windowBrightnessSlider.action = @selector(brightnessChanged:);
+    [content addSubview:self.windowBrightnessSlider];
+    self.windowBrightnessValue = [self label:@"100%"
+                                         frame:NSMakeRect(458, 87, 56, 20) size:13];
+    self.windowBrightnessValue.alignment = NSTextAlignmentRight;
+    [content addSubview:self.windowBrightnessValue];
+    [content addSubview:[self label:@"Software dimming; the other computer half is unaffected."
+                                frame:NSMakeRect(24, 60, 490, 18) size:11]];
 
     self.loginButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 24, 250, 25)];
     self.loginButton.title = @"Open HalfScreen at login";
@@ -640,6 +686,27 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [menu addItemWithTitle:@"Large text" action:@selector(largePressed:)
            keyEquivalent:@""];
     [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *brightnessItem = [[NSMenuItem alloc] init];
+    NSView *brightnessView = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, 0, 270, 58)];
+    [brightnessView addSubview:[self label:@"Brightness · Mac half"
+                                  frame:NSMakeRect(12, 33, 190, 18) size:12]];
+    self.menuBrightnessValue = [self label:@"100%"
+                                     frame:NSMakeRect(213, 33, 45, 18) size:12];
+    self.menuBrightnessValue.alignment = NSTextAlignmentRight;
+    [brightnessView addSubview:self.menuBrightnessValue];
+    self.menuBrightnessSlider = [[NSSlider alloc]
+        initWithFrame:NSMakeRect(12, 7, 246, 22)];
+    self.menuBrightnessSlider.minValue = 20;
+    self.menuBrightnessSlider.maxValue = 100;
+    self.menuBrightnessSlider.integerValue = self.brightness.percent;
+    self.menuBrightnessSlider.continuous = NO;
+    self.menuBrightnessSlider.target = self;
+    self.menuBrightnessSlider.action = @selector(brightnessChanged:);
+    [brightnessView addSubview:self.menuBrightnessSlider];
+    brightnessItem.view = brightnessView;
+    [menu addItem:brightnessItem];
+    [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit HalfScreen" action:@selector(quitPressed:)
            keyEquivalent:@""];
     for (NSMenuItem *item in menu.itemArray) item.target = self;
@@ -648,6 +715,11 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     [self refreshStatus];
+    [self refreshBrightnessUI];
+    if (self.brightness.percent < 100) {
+        [self.brightness applyPercent:self.brightness.percent
+                           toDisplay:FindTargetDisplay() error:NULL];
+    }
     self.watchdog = [NSTimer scheduledTimerWithTimeInterval:4
                                                     target:self
                                                   selector:@selector(watchdogTick:)
@@ -658,7 +730,15 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     return NO;
 }
 
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender
+                     hasVisibleWindows:(BOOL)hasVisibleWindows {
+    [self showWindow:nil];
+    return YES;
+}
+
 - (void)applicationWillTerminate:(NSNotification *)note {
+    [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
+    [self.brightness restoreForDisplay:FindTargetDisplay()];
     [self.displays stop];
 }
 
@@ -672,6 +752,35 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     alert.messageText = @"Could not change the screen size";
     alert.informativeText = error.localizedDescription;
     [alert runModal];
+}
+
+- (void)refreshBrightnessUI {
+    NSInteger percent = self.brightness.percent;
+    self.windowBrightnessSlider.integerValue = percent;
+    self.menuBrightnessSlider.integerValue = percent;
+    NSString *value = [NSString stringWithFormat:@"%ld%%", (long)percent];
+    self.windowBrightnessValue.stringValue = value;
+    self.menuBrightnessValue.stringValue = value;
+}
+
+- (void)brightnessChanged:(NSSlider *)sender {
+    NSError *error = nil;
+    NSInteger percent = (NSInteger)llround(sender.doubleValue);
+    if (![self.brightness applyPercent:percent
+                            toDisplay:FindTargetDisplay() error:&error]) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Could not adjust brightness";
+        alert.informativeText = error.localizedDescription;
+        [alert runModal];
+    }
+    [self refreshBrightnessUI];
+}
+
+- (void)brightnessCommand:(NSNotification *)note {
+    NSInteger percent = [note.userInfo[@"percent"] integerValue];
+    [self.brightness applyPercent:percent toDisplay:FindTargetDisplay()
+                            error:NULL];
+    [self refreshBrightnessUI];
 }
 
 - (void)largePressed:(id)sender {
@@ -730,10 +839,12 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 - (void)watchdogTick:(NSTimer *)timer {
     [self.displays maintain];
+    [self.brightness maintainForDisplay:FindTargetDisplay()];
     [self refreshStatus];
 }
 
 - (void)showWindow:(id)sender {
+    if (!self.window.isVisible) [self centerWindowOnBuiltInDisplay];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
@@ -744,6 +855,19 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--brightness") == 0) {
+            char *end = NULL;
+            long percent = strtol(argv[2], &end, 10);
+            if (!end || *end != '\0' || percent < 20 || percent > 100) {
+                fputs("Brightness must be an integer from 20 to 100.\n", stderr);
+                return 2;
+            }
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:kBrightnessCommand object:nil
+                          userInfo:@{@"percent": @(percent)}
+                deliverImmediately:YES];
+            return 0;
+        }
         if (argc == 2 && strcmp(argv[1], "--status") == 0) {
             CGDirectDisplayID target = FindTargetDisplay();
             puts(FullStatusDescription().UTF8String);
