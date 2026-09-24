@@ -14,7 +14,7 @@ make install
 open /Applications/HalfScreen.app
 ```
 
-The app has no account, payment, trial, or network dependency. Choose **Open HalfScreen at login** if you want the controls available after login; then apply your preferred custom size. Closing the window leaves the app in the menu bar; quitting removes the virtual display and restores the large built-in mode. While it runs, the app restores a custom size if the U28E590 briefly disconnects and reconnects.
+The app has no account, payment, trial, or network dependency. It lives in the top menu bar without a Dock icon; choose **Show HalfScreen** from that menu to reopen its window. Choose **Open HalfScreen at login** if you want the controls available after login; then apply your preferred custom size. Closing the window leaves the app in the menu bar; quitting removes the virtual display and restores the large built-in mode. While it runs, the app restores a custom size if the U28E590 briefly disconnects and reconnects.
 
 Custom logical sizes can be 640–1920 pixels wide and 600–2160 pixels high. The 8:9 option fills the half monitor. Other shapes may show bars.
 

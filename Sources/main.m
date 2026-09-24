@@ -805,7 +805,7 @@ int main(int argc, const char *argv[]) {
             return 0;
         }
         NSApplication *app = [NSApplication sharedApplication];
-        app.activationPolicy = NSApplicationActivationPolicyRegular;
+        app.activationPolicy = NSApplicationActivationPolicyAccessory;
         NSMenu *mainMenu = [[NSMenu alloc] init];
         NSMenuItem *appItem = [[NSMenuItem alloc] init];
         NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"HalfScreen"];
