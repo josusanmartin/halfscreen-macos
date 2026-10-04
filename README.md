@@ -1,11 +1,13 @@
 # HalfScreen
 
-A small Mac app for the Samsung U28E590 in picture by picture mode. It selects the monitor's 1920 × 2160 physical signal and offers:
+A small Mac app for the Samsung U28E590. Its top-bar **Half / Full** toggle matches the monitor's picture by picture and normal modes:
 
-- Large text: 960 × 1080 HiDPI, using a mode macOS already has.
-- More space: 1920 × 2160 native.
-- Custom logical sizes: an 8:9 HiDPI virtual display mirrored onto the U28E590. The app must stay open for a custom size.
-- A brightness slider in the app window and top menu. It places a transparent dimmer over the Mac half, so it does not change the monitor's backlight or the other computer's half.
+- Half mode: 1920 × 2160 physical output, with 960 × 1080 HiDPI or 1920 × 2160 native desktop sizes.
+- Full mode: 3840 × 2160 physical output, with 1920 × 1080 HiDPI or 3840 × 2160 native desktop sizes.
+- Custom logical sizes in Half mode: an 8:9 HiDPI virtual display mirrored onto the U28E590. The app must stay open for a custom size.
+- A brightness slider in the app window and top menu. It places a transparent dimmer over the Mac's image, so it does not change the monitor's backlight or the other computer's signal.
+
+Switch the monitor's own PBP setting, then choose **Half** or **Full** in HalfScreen. If the matching resolution is not yet advertised by macOS, HalfScreen waits and applies it after the display reconnects. It does not try to turn the monitor's PBP setting on or off.
 
 The U28E590 did not respond to DDC brightness reads in the tested split-screen setup, so this brightness control is visual dimming only. Quitting HalfScreen removes the dimmer.
 
@@ -21,10 +23,10 @@ The app has no account, payment, trial, or network dependency. It lives in the t
 
 Custom logical sizes can be 640–1920 pixels wide and 600–2160 pixels high. The 8:9 option fills the half monitor. Other shapes may show bars.
 
-Custom sizes use undocumented macOS `CGVirtualDisplay` and CGS display-mode APIs. They may need adjustment after a macOS update. A monitor cannot accept arbitrary physical timings: HalfScreen keeps the U28E590 on its advertised 1920 × 2160 timing and varies the logical desktop size. This version was tested on macOS 26.5.2 with an M3 Max.
+Custom sizes use undocumented macOS `CGVirtualDisplay` and CGS display-mode APIs. They may need adjustment after a macOS update. A monitor cannot accept arbitrary physical timings: HalfScreen uses the U28E590's advertised 1920 × 2160 or 3840 × 2160 timing and varies the logical desktop size. This version was tested on macOS 26.5.2 with an M3 Max.
 
 The app identifies the U28E590 by Samsung vendor and model IDs, so it will not change the other Samsung display.
 
-Run `/Applications/HalfScreen.app/Contents/MacOS/HalfScreen --status` to inspect the current logical and physical mode. `--large` and `--native` switch directly between the two physical-display presets without opening the app. With the app running, `--brightness 80` sets the Mac half to 80% visual brightness; valid values are 20–100.
+Run `/Applications/HalfScreen.app/Contents/MacOS/HalfScreen --status` to inspect the current logical and physical mode. With the app running, `--layout half` or `--layout full` selects a monitor layout and `--brightness 80` sets 80% visual brightness; valid brightness values are 20–100. `--large` and `--native` switch directly between the selected layout's two display presets without opening the app.
 
 Third-party acknowledgments are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

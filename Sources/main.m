@@ -51,6 +51,7 @@ static const uint32_t kU28Model = 0x0c4d;
 static const size_t kSignalWidth = 1920;
 static const size_t kSignalHeight = 2160;
 static NSString * const kBrightnessCommand = @"local.josu.HalfScreen.SetBrightness";
+static NSString * const kLayoutCommand = @"local.josu.HalfScreen.SetLayout";
 static CGDirectDisplayID FindTargetDisplay(void);
 static NSString *ModeDescription(CGDirectDisplayID display);
 
@@ -212,9 +213,15 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 @property (nonatomic) BOOL customActive;
 @property (nonatomic) BOOL applying;
 @property (nonatomic) BOOL resumeWhenConnected;
+@property (nonatomic) BOOL fullLayout;
+@property (nonatomic) BOOL halfNativePreset;
+@property (nonatomic) BOOL fullNativePreset;
+@property (nonatomic) BOOL halfCustomSelected;
+@property (nonatomic) BOOL pendingLayout;
 @property (nonatomic, copy) void (^onChange)(void);
 - (BOOL)useBuiltInLarge:(NSError **)error;
 - (BOOL)useNative:(NSError **)error;
+- (BOOL)selectFullLayout:(BOOL)full error:(NSError **)error;
 - (BOOL)useCustomWidth:(NSInteger)width height:(NSInteger)height error:(NSError **)error;
 - (void)maintain;
 - (void)stop;
@@ -222,6 +229,30 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 @end
 
 @implementation HSDisplayController
+
+- (instancetype)init {
+    self = [super init];
+    if (!self) return nil;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    _fullLayout = [defaults boolForKey:@"fullLayout"];
+    _fullNativePreset = [defaults boolForKey:@"fullNativePreset"];
+    id savedHalfPreset = [defaults objectForKey:@"halfNativePreset"];
+    _halfNativePreset = savedHalfPreset ? [savedHalfPreset boolValue] : NO;
+    CGDirectDisplayID target = FindTargetDisplay();
+    if (target != kCGNullDirectDisplay) {
+        int current = CurrentPrivateModeIndex(target);
+        int halfNative = PrivateModeIndex(target, kSignalWidth, kSignalHeight, 1.0);
+        int halfLarge = PrivateModeIndex(target, 960, 1080, 2.0);
+        int fullNative = PrivateModeIndex(target, 3840, 2160, 1.0);
+        int fullLarge = PrivateModeIndex(target, 1920, 1080, 2.0);
+        if (halfNative >= 0 && current == halfNative) _halfNativePreset = YES;
+        else if (halfLarge >= 0 && current == halfLarge) _halfNativePreset = NO;
+        if (fullNative >= 0 && current == fullNative) _fullNativePreset = YES;
+        else if (fullLarge >= 0 && current == fullLarge) _fullNativePreset = NO;
+    }
+    _pendingLayout = YES;
+    return self;
+}
 
 - (NSError *)errorWithText:(NSString *)text {
     return [NSError errorWithDomain:@"local.josu.HalfScreen"
@@ -276,28 +307,102 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     return YES;
 }
 
-- (BOOL)useBuiltInLarge:(NSError **)error {
+- (void)preferredWidth:(size_t *)width height:(size_t *)height
+           pixelWidth:(size_t *)pixelWidth pixelHeight:(size_t *)pixelHeight {
+    BOOL native = self.fullLayout ? self.fullNativePreset : self.halfNativePreset;
+    *pixelWidth = self.fullLayout ? 3840 : kSignalWidth;
+    *pixelHeight = kSignalHeight;
+    *width = native ? *pixelWidth : *pixelWidth / 2;
+    *height = native ? *pixelHeight : *pixelHeight / 2;
+}
+
+- (BOOL)hasPreferredModeOnDisplay:(CGDirectDisplayID)target {
+    if (target == kCGNullDirectDisplay) return NO;
+    size_t width, height, pixelWidth, pixelHeight;
+    [self preferredWidth:&width height:&height
+              pixelWidth:&pixelWidth pixelHeight:&pixelHeight];
+    double density = (double)pixelWidth / (double)width;
+    if (PrivateModeIndex(target, width, height, density) >= 0) return YES;
+    CGDisplayModeRef mode = CopyMode(target, width, height,
+                                    pixelWidth, pixelHeight);
+    if (mode) CFRelease(mode);
+    return mode != NULL;
+}
+
+- (BOOL)applyPreferredMode:(NSError **)error {
     self.resumeWhenConnected = NO;
     BOOL hadVirtual = self.virtualDisplay != nil;
     [self unmirrorAndRelease];
     if (hadVirtual) usleep(400000);
-    BOOL ok = [self applyDirectWidth:960 height:1080
-                         pixelWidth:kSignalWidth pixelHeight:kSignalHeight
+    CGDirectDisplayID target = FindTargetDisplay();
+    if (![self hasPreferredModeOnDisplay:target]) {
+        self.pendingLayout = YES;
+        [self notifyChange];
+        return YES;
+    }
+    size_t width, height, pixelWidth, pixelHeight;
+    [self preferredWidth:&width height:&height
+              pixelWidth:&pixelWidth pixelHeight:&pixelHeight];
+    int desired = PrivateModeIndex(target, width, height,
+                                   (double)pixelWidth / (double)width);
+    if (desired >= 0 && CurrentPrivateModeIndex(target) == desired) {
+        self.pendingLayout = NO;
+        [self notifyChange];
+        return YES;
+    }
+    BOOL ok = [self applyDirectWidth:width height:height
+                         pixelWidth:pixelWidth pixelHeight:pixelHeight
                               error:error];
+    self.pendingLayout = !ok;
     [self notifyChange];
     return ok;
 }
 
+- (BOOL)useBuiltInLarge:(NSError **)error {
+    if (self.fullLayout) {
+        self.fullNativePreset = NO;
+        [[NSUserDefaults standardUserDefaults] setBool:NO
+                                               forKey:@"fullNativePreset"];
+    } else {
+        self.halfNativePreset = NO;
+        self.halfCustomSelected = NO;
+        [[NSUserDefaults standardUserDefaults] setBool:NO
+                                               forKey:@"halfNativePreset"];
+    }
+    return [self applyPreferredMode:error];
+}
+
 - (BOOL)useNative:(NSError **)error {
-    self.resumeWhenConnected = NO;
-    BOOL hadVirtual = self.virtualDisplay != nil;
-    [self unmirrorAndRelease];
-    if (hadVirtual) usleep(400000);
-    BOOL ok = [self applyDirectWidth:kSignalWidth height:kSignalHeight
-                         pixelWidth:kSignalWidth pixelHeight:kSignalHeight
-                              error:error];
-    [self notifyChange];
-    return ok;
+    if (self.fullLayout) {
+        self.fullNativePreset = YES;
+        [[NSUserDefaults standardUserDefaults] setBool:YES
+                                               forKey:@"fullNativePreset"];
+    } else {
+        self.halfNativePreset = YES;
+        self.halfCustomSelected = NO;
+        [[NSUserDefaults standardUserDefaults] setBool:YES
+                                               forKey:@"halfNativePreset"];
+    }
+    return [self applyPreferredMode:error];
+}
+
+- (BOOL)selectFullLayout:(BOOL)full error:(NSError **)error {
+    if (full && self.customActive) self.halfCustomSelected = YES;
+    self.fullLayout = full;
+    [[NSUserDefaults standardUserDefaults] setBool:full forKey:@"fullLayout"];
+    if (!full && self.halfCustomSelected) {
+        CGDirectDisplayID target = FindTargetDisplay();
+        if (target == kCGNullDirectDisplay ||
+            PrivateModeIndex(target, kSignalWidth, kSignalHeight, 1.0) < 0) {
+            self.pendingLayout = YES;
+            [self notifyChange];
+            return YES;
+        }
+        self.pendingLayout = NO;
+        return [self useCustomWidth:self.looksWidth height:self.looksHeight
+                             error:error];
+    }
+    return [self applyPreferredMode:error];
 }
 
 - (BOOL)createVirtualWidth:(NSInteger)width height:(NSInteger)height
@@ -437,6 +542,11 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 - (BOOL)useCustomWidth:(NSInteger)width height:(NSInteger)height
                 error:(NSError **)error {
+    if (self.fullLayout) {
+        if (error) *error = [self errorWithText:
+            @"Custom sizes are available in Half mode. Select Half first."];
+        return NO;
+    }
     if (width < 640 || height < 600 || width > 1920 || height > 2160) {
         if (error) *error = [self errorWithText:
             @"Enter a logical size from 640–1920 wide and 600–2160 high."];
@@ -456,6 +566,8 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     self.looksWidth = width;
     self.looksHeight = height;
     self.customActive = YES;
+    self.halfCustomSelected = YES;
+    self.pendingLayout = NO;
     self.resumeWhenConnected = YES;
     self.applying = YES;
     [[NSUserDefaults standardUserDefaults] setInteger:width forKey:@"looksWidth"];
@@ -471,7 +583,21 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     if (target == kCGNullDirectDisplay) {
         if (self.customActive) {
             [self unmirrorAndRelease];
-            [self notifyChange];
+        }
+        self.pendingLayout = YES;
+        [self notifyChange];
+        return;
+    }
+    if (self.pendingLayout) {
+        if (!self.fullLayout && self.halfCustomSelected) {
+            if (PrivateModeIndex(target, kSignalWidth, kSignalHeight, 1.0) >= 0) {
+                NSError *ignored = nil;
+                [self useCustomWidth:self.looksWidth height:self.looksHeight
+                              error:&ignored];
+            }
+        } else if ([self hasPreferredModeOnDisplay:target]) {
+            NSError *ignored = nil;
+            [self applyPreferredMode:&ignored];
         }
         return;
     }
@@ -479,6 +605,13 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
         NSError *ignored = nil;
         [self useCustomWidth:self.looksWidth height:self.looksHeight
                       error:&ignored];
+        return;
+    }
+    if (!self.fullLayout && self.customActive &&
+        PrivateModeIndex(target, kSignalWidth, kSignalHeight, 1.0) < 0) {
+        [self unmirrorAndRelease];
+        self.pendingLayout = YES;
+        [self notifyChange];
         return;
     }
     if (self.virtualDisplay &&
@@ -507,6 +640,9 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 - (NSString *)status {
     CGDirectDisplayID target = FindTargetDisplay();
     if (target == kCGNullDirectDisplay) return @"U28E590 is disconnected";
+    if (self.pendingLayout) return self.fullLayout
+        ? @"Full selected — waiting for the monitor's 4K mode"
+        : @"Half selected — waiting for split-screen mode";
     if (self.applying) return @"Applying custom size…";
     if (self.customActive && self.virtualDisplay &&
         CGDisplayMirrorsDisplay(target) == self.virtualID) {
@@ -520,12 +656,23 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 @interface HSAppDelegate : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
 @property (nonatomic, strong) NSWindow *window;
+@property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
+@property (nonatomic, strong) NSTextField *outputLabel;
+@property (nonatomic, strong) NSTextField *customNoteLabel;
 @property (nonatomic, strong) NSTextField *widthField;
 @property (nonatomic, strong) NSTextField *heightField;
 @property (nonatomic, strong) NSButton *aspectButton;
+@property (nonatomic, strong) NSSegmentedControl *layoutToggle;
+@property (nonatomic, strong) NSButton *largeButton;
+@property (nonatomic, strong) NSButton *nativeButton;
+@property (nonatomic, strong) NSButton *applyCustomButton;
 @property (nonatomic, strong) NSButton *loginButton;
 @property (nonatomic, strong) NSStatusItem *statusItem;
+@property (nonatomic, strong) NSMenuItem *halfMenuItem;
+@property (nonatomic, strong) NSMenuItem *fullMenuItem;
+@property (nonatomic, strong) NSMenuItem *menuLargeItem;
+@property (nonatomic, strong) NSMenuItem *menuNativeItem;
 @property (nonatomic, strong) HSDisplayController *displays;
 @property (nonatomic, strong) HSBrightnessController *brightness;
 @property (nonatomic, strong) NSSlider *windowBrightnessSlider;
@@ -586,10 +733,13 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [[NSDistributedNotificationCenter defaultCenter]
         addObserver:self selector:@selector(brightnessCommand:)
               name:kBrightnessCommand object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(layoutCommand:)
+              name:kLayoutCommand object:nil];
     __weak typeof(self) weakSelf = self;
     self.displays.onChange = ^{ [weakSelf refreshStatus]; };
 
-    NSRect frame = NSMakeRect(0, 0, 540, 455);
+    NSRect frame = NSMakeRect(0, 0, 540, 495);
     self.window = [[NSWindow alloc]
         initWithContentRect:frame
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -600,22 +750,36 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [self centerWindowOnBuiltInDisplay];
     NSView *content = self.window.contentView;
 
-    NSTextField *title = [self label:@"U28E590 · split monitor"
-                                 frame:NSMakeRect(24, 406, 490, 31) size:23];
-    title.font = [NSFont boldSystemFontOfSize:23];
-    [content addSubview:title];
+    self.titleLabel = [self label:@"U28E590 · split monitor"
+                                  frame:NSMakeRect(24, 446, 490, 31) size:23];
+    self.titleLabel.font = [NSFont boldSystemFontOfSize:23];
+    [content addSubview:self.titleLabel];
     self.statusLabel = [self label:@"Checking display…"
-                              frame:NSMakeRect(24, 372, 490, 24) size:14];
+                              frame:NSMakeRect(24, 412, 490, 24) size:14];
     [content addSubview:self.statusLabel];
-    [content addSubview:[self label:@"Output stays at 1920 × 2160 so the image fills its half."
-                                frame:NSMakeRect(24, 341, 490, 21) size:12]];
+    self.outputLabel = [self label:@"Output stays at 1920 × 2160 so the image fills its half."
+                                  frame:NSMakeRect(24, 381, 490, 21) size:12];
+    [content addSubview:self.outputLabel];
 
-    [content addSubview:[self button:@"Large text · 960 × 1080"
-                                frame:NSMakeRect(24, 295, 245, 32)
-                               action:@selector(largePressed:)]];
-    [content addSubview:[self button:@"More space · 1920 × 2160"
+    self.layoutToggle = [[NSSegmentedControl alloc]
+        initWithFrame:NSMakeRect(24, 343, 490, 30)];
+    self.layoutToggle.segmentCount = 2;
+    [self.layoutToggle setLabel:@"Half · split monitor" forSegment:0];
+    [self.layoutToggle setLabel:@"Full · normal monitor" forSegment:1];
+    self.layoutToggle.trackingMode = NSSegmentSwitchTrackingSelectOne;
+    self.layoutToggle.selectedSegment = self.displays.fullLayout ? 1 : 0;
+    self.layoutToggle.target = self;
+    self.layoutToggle.action = @selector(layoutChanged:);
+    [content addSubview:self.layoutToggle];
+
+    self.largeButton = [self button:@"Large text · 960 × 1080"
+                               frame:NSMakeRect(24, 295, 245, 32)
+                              action:@selector(largePressed:)];
+    [content addSubview:self.largeButton];
+    self.nativeButton = [self button:@"More space · 1920 × 2160"
                                 frame:NSMakeRect(275, 295, 239, 32)
-                               action:@selector(nativePressed:)]];
+                               action:@selector(nativePressed:)];
+    [content addSubview:self.nativeButton];
 
     NSTextField *custom = [self label:@"Custom screen size (looks like)"
                                     frame:NSMakeRect(24, 256, 350, 22) size:14];
@@ -633,9 +797,10 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [content addSubview:self.widthField];
     [content addSubview:[self label:@"×" frame:NSMakeRect(110, 220, 20, 22) size:16]];
     [content addSubview:self.heightField];
-    [content addSubview:[self button:@"Apply custom"
-                                frame:NSMakeRect(310, 215, 204, 32)
-                               action:@selector(customPressed:)]];
+    self.applyCustomButton = [self button:@"Apply custom"
+                                       frame:NSMakeRect(310, 215, 204, 32)
+                                      action:@selector(customPressed:)];
+    [content addSubview:self.applyCustomButton];
     self.aspectButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 183, 275, 24)];
     self.aspectButton.title = @"Fill the half monitor (8:9)";
     self.aspectButton.buttonType = NSButtonTypeSwitch;
@@ -643,10 +808,11 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     self.aspectButton.target = self;
     self.aspectButton.action = @selector(aspectChanged:);
     [content addSubview:self.aspectButton];
-    [content addSubview:[self label:@"Custom sizes need HalfScreen open. Other shapes may show bars."
-                                frame:NSMakeRect(24, 155, 490, 20) size:11]];
+    self.customNoteLabel = [self label:@"Custom sizes need HalfScreen open. Other shapes may show bars."
+                                      frame:NSMakeRect(24, 155, 490, 20) size:11];
+    [content addSubview:self.customNoteLabel];
 
-    NSTextField *brightnessTitle = [self label:@"Brightness · Mac half"
+    NSTextField *brightnessTitle = [self label:@"Brightness · U28E590"
                                          frame:NSMakeRect(24, 115, 350, 22) size:14];
     brightnessTitle.font = [NSFont boldSystemFontOfSize:14];
     [content addSubview:brightnessTitle];
@@ -663,7 +829,7 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
                                          frame:NSMakeRect(458, 87, 56, 20) size:13];
     self.windowBrightnessValue.alignment = NSTextAlignmentRight;
     [content addSubview:self.windowBrightnessValue];
-    [content addSubview:[self label:@"Software dimming; the other computer half is unaffected."
+    [content addSubview:[self label:@"Software dimming; the monitor backlight is unchanged."
                                 frame:NSMakeRect(24, 60, 490, 18) size:11]];
 
     self.loginButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 24, 250, 25)];
@@ -683,13 +849,24 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     NSMenu *menu = [[NSMenu alloc] init];
     [menu addItemWithTitle:@"Show HalfScreen" action:@selector(showWindow:)
            keyEquivalent:@""];
-    [menu addItemWithTitle:@"Large text" action:@selector(largePressed:)
-           keyEquivalent:@""];
+    self.halfMenuItem = [menu addItemWithTitle:@"Half · split monitor"
+                                     action:@selector(halfPressed:)
+                              keyEquivalent:@""];
+    self.fullMenuItem = [menu addItemWithTitle:@"Full · normal monitor"
+                                     action:@selector(fullPressed:)
+                              keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+    self.menuLargeItem = [menu addItemWithTitle:@"Large text"
+                                      action:@selector(largePressed:)
+                               keyEquivalent:@""];
+    self.menuNativeItem = [menu addItemWithTitle:@"More space"
+                                       action:@selector(nativePressed:)
+                                keyEquivalent:@""];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *brightnessItem = [[NSMenuItem alloc] init];
     NSView *brightnessView = [[NSView alloc]
         initWithFrame:NSMakeRect(0, 0, 270, 58)];
-    [brightnessView addSubview:[self label:@"Brightness · Mac half"
+    [brightnessView addSubview:[self label:@"Brightness · U28E590"
                                   frame:NSMakeRect(12, 33, 190, 18) size:12]];
     self.menuBrightnessValue = [self label:@"100%"
                                      frame:NSMakeRect(213, 33, 45, 18) size:12];
@@ -714,6 +891,7 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    [self.displays maintain];
     [self refreshStatus];
     [self refreshBrightnessUI];
     if (self.brightness.percent < 100) {
@@ -744,7 +922,46 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 - (void)refreshStatus {
     self.statusLabel.stringValue = [self.displays status];
+    [self refreshLayoutUI];
 }
+
+- (void)refreshLayoutUI {
+    BOOL full = self.displays.fullLayout;
+    self.titleLabel.stringValue = full
+        ? @"U28E590 · normal monitor" : @"U28E590 · split monitor";
+    self.outputLabel.stringValue = full
+        ? @"Full mode uses 3840 × 2160 when the monitor leaves PBP."
+        : @"Half mode uses 1920 × 2160 to fill its split panel.";
+    self.customNoteLabel.stringValue = full
+        ? @"Custom sizes are available in Half mode."
+        : @"Custom sizes need HalfScreen open. Other shapes may show bars.";
+    self.layoutToggle.selectedSegment = full ? 1 : 0;
+    self.halfMenuItem.state = full ? NSControlStateValueOff : NSControlStateValueOn;
+    self.fullMenuItem.state = full ? NSControlStateValueOn : NSControlStateValueOff;
+    self.largeButton.title = full
+        ? @"Large text · 1920 × 1080" : @"Large text · 960 × 1080";
+    self.nativeButton.title = full
+        ? @"More space · 3840 × 2160" : @"More space · 1920 × 2160";
+    self.widthField.enabled = !full;
+    self.heightField.enabled = !full &&
+        self.aspectButton.state != NSControlStateValueOn;
+    self.aspectButton.enabled = !full;
+    self.applyCustomButton.enabled = !full;
+}
+
+- (void)changeLayoutToFull:(BOOL)full {
+    NSError *error = nil;
+    [self.displays selectFullLayout:full error:&error];
+    [self showError:error];
+    [self refreshStatus];
+}
+
+- (void)layoutChanged:(NSSegmentedControl *)sender {
+    [self changeLayoutToFull:sender.selectedSegment == 1];
+}
+
+- (void)halfPressed:(id)sender { [self changeLayoutToFull:NO]; }
+- (void)fullPressed:(id)sender { [self changeLayoutToFull:YES]; }
 
 - (void)showError:(NSError *)error {
     if (!error) return;
@@ -781,6 +998,10 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
     [self.brightness applyPercent:percent toDisplay:FindTargetDisplay()
                             error:NULL];
     [self refreshBrightnessUI];
+}
+
+- (void)layoutCommand:(NSNotification *)note {
+    [self changeLayoutToFull:[note.userInfo[@"full"] boolValue]];
 }
 
 - (void)largePressed:(id)sender {
@@ -855,6 +1076,18 @@ static NSString *ModeDescription(CGDirectDisplayID display) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--layout") == 0) {
+            BOOL full = strcmp(argv[2], "full") == 0;
+            if (!full && strcmp(argv[2], "half") != 0) {
+                fputs("Layout must be 'half' or 'full'.\n", stderr);
+                return 2;
+            }
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:kLayoutCommand object:nil
+                          userInfo:@{@"full": @(full)}
+                deliverImmediately:YES];
+            return 0;
+        }
         if (argc == 3 && strcmp(argv[1], "--brightness") == 0) {
             char *end = NULL;
             long percent = strtol(argv[2], &end, 10);
